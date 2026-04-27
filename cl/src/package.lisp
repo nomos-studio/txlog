@@ -77,6 +77,10 @@
    #:register-source
    #:emit
    #:read-response
+   ;; Conditions
+   #:daemon-error
+   #:daemon-error-response
+   #:connection-closed-error
    ;; Utility
    #:session-beat
    #:wall-ns))

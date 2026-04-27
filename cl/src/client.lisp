@@ -91,11 +91,37 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Writer
+;;
+;; By default emit and register-source are synchronous: they write the request
+;; and read the daemon's :ok / {:error ...} response. On {:error ...} they
+;; signal a DAEMON-ERROR; on EOF (the daemon closed the socket mid-request)
+;; they signal a CONNECTION-CLOSED-ERROR. Pass :ASYNC T to fire-and-forget;
+;; if you do, you MUST drain responses with READ-RESPONSE before DISCONNECT,
+;; otherwise the kernel may RST pending writes from the daemon.
 ;; ---------------------------------------------------------------------------
 
-(defun register-source (client id name &optional description)
+(define-condition daemon-error (error)
+  ((response :initarg :response :reader daemon-error-response))
+  (:report (lambda (c s) (format s "txlog daemon error: ~a"
+                                 (daemon-error-response c)))))
+
+(define-condition connection-closed-error (error)
+  ()
+  (:report (lambda (c s) (declare (ignore c))
+             (format s "txlog daemon closed the connection without responding"))))
+
+(defun %await-ack (client)
+  "Read a response and dispatch on it. Returns NIL on :ok."
+  (let ((resp (read-response client)))
+    (cond
+      ((null resp)             (error 'connection-closed-error))
+      ((string= resp ":ok")    nil)
+      (t                       (error 'daemon-error :response resp)))))
+
+(defun register-source (client id name &key description async)
   "Register a source with the daemon. Idempotent.
-   ID is an edn-keyword; NAME and DESCRIPTION are strings."
+   ID is an edn-keyword; NAME and DESCRIPTION are strings.
+   Synchronous by default — see this file's writer-section comment."
   (%send-message
    client
    (%edn-map ":op"          ":register-source"
@@ -103,12 +129,13 @@
              ":name"        (txlog.edn:to-edn-string name)
              ":description" (if description
                                 (txlog.edn:to-edn-string description)
-                                "nil"))))
+                                "nil")))
+  (unless async (%await-ack client)))
 
-(defun emit (client &key id source path beat wall-ns before after parent)
-  "Emit one entry to the daemon. All keyword arguments except :BEFORE, :AFTER,
-   and :PARENT are required.
-   SOURCE is an edn-keyword; PATH is a list of edn-keywords."
+(defun emit (client &key id source path beat wall-ns before after parent async)
+  "Emit one entry to the daemon. SOURCE/PATH/BEAT/WALL-NS required.
+   :ID is optional (the daemon's txlog:emit will generate a v4 UUID if absent).
+   Synchronous by default — see this file's writer-section comment."
   (let ((pairs (list ":op"      ":emit"
                      ":source"  (txlog.edn:to-edn-string source)
                      ":path"    (txlog.edn:to-edn-string path)
@@ -122,4 +149,5 @@
       (setf pairs (append pairs (list ":after"  (txlog.edn:to-edn-string after)))))
     (when parent
       (setf pairs (append pairs (list ":parent" (txlog.edn:to-edn-string parent)))))
-    (%send-message client (apply #'%edn-map pairs))))
+    (%send-message client (apply #'%edn-map pairs)))
+  (unless async (%await-ack client)))

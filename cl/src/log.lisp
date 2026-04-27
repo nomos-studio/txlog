@@ -65,6 +65,16 @@
           do (when (member i '(4 6 8 10)) (write-char #\- out))
              (format out "~(~2,'0x~)" (aref bytes i)))))
 
+(defun make-uuid-bytes ()
+  "Generate a fresh RFC 4122 v4 UUID as a 16-element (unsigned-byte 8) vector.
+   Reads from /dev/urandom; sets the version-4 nibble and variant-1 bits."
+  (let ((bytes (make-array 16 :element-type '(unsigned-byte 8))))
+    (with-open-file (in #P"/dev/urandom" :element-type '(unsigned-byte 8))
+      (read-sequence bytes in))
+    (setf (aref bytes 6) (logior #x40 (logand #x0f (aref bytes 6))))
+    (setf (aref bytes 8) (logior #x80 (logand #x3f (aref bytes 8))))
+    bytes))
+
 ;; ---------------------------------------------------------------------------
 ;; Entry plist
 ;;
@@ -143,21 +153,23 @@
 
 (defun emit (log entry)
   "Append one entry to the log. Thread-safe; serialised via lock.
-   ENTRY is a plist with :id :beat :wall-ns :source :path
-   and optional :before :after :parent."
-  (bt:with-lock-held ((log-lock log))
-    (sqlite:execute-non-query
-     (log-db log)
-     "INSERT INTO changes (tx_id, beat, wall_ns, source, path, before, after, parent)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-     (uuid-string->bytes (getf entry :id))
-     (float (getf entry :beat) 1.0d0)
-     (getf entry :wall-ns)
-     (txlog.edn:to-edn-string (getf entry :source))
-     (txlog.edn:to-edn-string (getf entry :path))
-     (let ((v (getf entry :before))) (when v (txlog.edn:to-edn-string v)))
-     (let ((v (getf entry :after)))  (when v (txlog.edn:to-edn-string v)))
-     (let ((v (getf entry :parent))) (when v (txlog.edn:to-edn-string v))))))
+   ENTRY is a plist with :beat :wall-ns :source :path and optional
+   :id :before :after :parent. If :id is missing, a fresh v4 UUID is
+   generated."
+  (let ((id (getf entry :id)))
+    (bt:with-lock-held ((log-lock log))
+      (sqlite:execute-non-query
+       (log-db log)
+       "INSERT INTO changes (tx_id, beat, wall_ns, source, path, before, after, parent)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+       (if id (uuid-string->bytes id) (make-uuid-bytes))
+       (float (getf entry :beat) 1.0d0)
+       (getf entry :wall-ns)
+       (txlog.edn:to-edn-string (getf entry :source))
+       (txlog.edn:to-edn-string (getf entry :path))
+       (let ((v (getf entry :before))) (when v (txlog.edn:to-edn-string v)))
+       (let ((v (getf entry :after)))  (when v (txlog.edn:to-edn-string v)))
+       (let ((v (getf entry :parent))) (when v (txlog.edn:to-edn-string v)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Layer 1 — full log

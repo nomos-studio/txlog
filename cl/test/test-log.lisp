@@ -281,23 +281,22 @@
   (format nil "/tmp/txlog-test-~a-~a.~a" (get-universal-time) (random 1000000) ext))
 
 (test daemon-roundtrip
-  "Daemon receives register-source and emit over the socket, persists to DB."
+  "Daemon receives register-source and emit over the socket, persists to DB.
+   Client calls are synchronous-by-default — they read :ok internally."
   (let ((db   (%tmp-name "db"))
         (sock (%tmp-name "sock")))
     (unwind-protect
          (progn
            (txlog.daemon:start db sock)
            (txlog.client:with-client (c sock)
-             (txlog.client:register-source c (kw "test/x") "X" "")
-             (is (string= ":ok" (txlog.client:read-response c)))
+             (txlog.client:register-source c (kw "test/x") "X")
              (txlog.client:emit c
                :id      "00000000-0000-0000-0000-000000000001"
                :source  (kw "test/x")
                :path    (make-path "a/b")
                :beat    1.0d0
                :wall-ns 1714000000000000000
-               :after   "hello")
-             (is (string= ":ok" (txlog.client:read-response c))))
+               :after   "hello"))
            (txlog.daemon:stop)
            (with-log (l db)
              (let ((entries (read-all l)))
@@ -306,6 +305,45 @@
       (when (txlog.daemon:running-p) (txlog.daemon:stop))
       (when (probe-file sock) (delete-file sock))
       (when (probe-file db)   (delete-file db)))))
+
+(test daemon-stop-drains-handlers
+  "stop() blocks until in-flight connection handlers exit, and clears its
+   handler list. Without this, callers like cadence have to sleep before
+   reopening the DB to be sure pending writes have committed."
+  (let ((db   (%tmp-name "db"))
+        (sock (%tmp-name "sock")))
+    (unwind-protect
+         (progn
+           (txlog.daemon:start db sock)
+           (let ((c (txlog.client:connect sock)))
+             (txlog.client:register-source c (kw "test/x") "X")
+             ;; After the synchronous ack, the handler is parked in read-line
+             ;; waiting for the next request — perfect state to test drain.
+             (let ((handler (first txlog.daemon::*handlers*)))
+               (is (not (null handler)))
+               (is (bt:thread-alive-p (car handler)))
+               (txlog.daemon:stop)
+               (is (not (bt:thread-alive-p (car handler))))
+               (is (null txlog.daemon::*handlers*)))
+             (handler-case (txlog.client:disconnect c) (error () nil))))
+      (when (txlog.daemon:running-p) (txlog.daemon:stop))
+      (when (probe-file sock) (delete-file sock))
+      (when (probe-file db)   (delete-file db)))))
+
+(test emit-without-id-generates-uuid
+  "txlog:emit generates a fresh v4 UUID when :id is missing."
+  (with-log (log ":memory:")
+    (emit log (list :beat 1.0d0 :wall-ns 1714000000000000000
+                    :source (kw "txlog/user") :path (make-path "a/b")
+                    :after "v"))
+    (let* ((entries (read-all log))
+           (id      (getf (first entries) :id)))
+      (is (= 1 (length entries)))
+      (is (stringp id))
+      (is (= 36 (length id)))
+      ;; Version-4 UUID: 13th hex digit must be '4', and 17th in {8,9,a,b}.
+      (is (char= #\4 (char id 14)))
+      (is (find (char id 19) "89ab" :test #'char=)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Runner

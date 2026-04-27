@@ -27,6 +27,10 @@
 (defvar *listener-thread* nil "The bt thread running the accept loop.")
 (defvar *state-lock*     (bt:make-lock "txlog-daemon-state") "Guards above vars.")
 
+(defvar *handlers*       nil "List of (thread . conn-socket) for active connections.")
+(defvar *handlers-lock*  (bt:make-lock "txlog-daemon-handlers")
+  "Separate lock so handlers can self-unregister without contending with stop().")
+
 ;; ---------------------------------------------------------------------------
 ;; Predicates
 ;; ---------------------------------------------------------------------------
@@ -122,11 +126,27 @@
               (handle-request log line stream))))
       (error (e)
         (format *error-output* "txlog-daemon: connection error: ~a~%" e)))
-    (usocket:socket-close conn-socket)))
+    ;; stop() may have closed the socket from another thread; ignore the dupe.
+    (handler-case (usocket:socket-close conn-socket) (error () nil))))
 
 ;; ---------------------------------------------------------------------------
 ;; Listener loop
 ;; ---------------------------------------------------------------------------
+
+(defun %track-handler (log conn)
+  "Make a handler thread for CONN and register (thread . conn) atomically so
+   the thread cannot complete and self-unregister before the entry exists."
+  (bt:with-lock-held (*handlers-lock*)
+    (let ((thread (bt:make-thread
+                   (lambda ()
+                     (unwind-protect
+                          (handle-connection log conn)
+                       (bt:with-lock-held (*handlers-lock*)
+                         (setf *handlers*
+                               (delete (bt:current-thread) *handlers*
+                                       :key #'car :test #'eq)))))
+                   :name "txlog-connection")))
+      (push (cons thread conn) *handlers*))))
 
 (defun %accept-loop (log server-socket)
   "Loop accepting connections; each gets a handler thread.
@@ -138,9 +158,7 @@
                       (usocket:socket-accept server-socket
                                              :element-type 'character)
                     (error () (return)))))
-        (bt:make-thread
-         (lambda () (handle-connection log conn))
-         :name "txlog-connection")))))
+        (%track-handler log conn)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Lifecycle
@@ -171,9 +189,11 @@
       t)))
 
 (defun stop ()
-  "Stop the daemon: signal the listener out of accept(), close sockets and DB.
-   Blocks until the listener thread exits."
+  "Stop the daemon: signal the listener out of accept(), drain in-flight
+   connection handlers, close sockets, close the DB. Blocks until all
+   handler threads have exited."
   (bt:with-lock-held (*state-lock*)
+    ;; 1. Stop accepting new connections.
     (when (and *listener-thread* (bt:thread-alive-p *listener-thread*))
       ;; socket-close alone does not unblock a Unix-domain accept on Linux,
       ;; so we explicitly throw out of the accept call.
@@ -183,6 +203,19 @@
         (error () nil))
       (bt:join-thread *listener-thread*))
     (setf *listener-thread* nil)
+    ;; 2. Drain in-flight handler threads. socket-shutdown sends EOF at the
+    ;;    kernel level, waking any handler thread blocked in read-line —
+    ;;    which then exits the loop, runs its unwind-protect (closing the
+    ;;    socket and self-unregistering), and terminates. socket-close on
+    ;;    SBCL does not reliably wake a concurrent reader; shutdown does.
+    (let ((snapshot (bt:with-lock-held (*handlers-lock*) (copy-list *handlers*))))
+      (dolist (h snapshot)
+        (handler-case (usocket:socket-shutdown (cdr h) :io) (error () nil)))
+      (dolist (h snapshot)
+        (when (bt:thread-alive-p (car h))
+          (handler-case (bt:join-thread (car h)) (error () nil)))))
+    (bt:with-lock-held (*handlers-lock*) (setf *handlers* nil))
+    ;; 3. Close the listening socket and the DB.
     (when *server-socket*
       (handler-case (usocket:socket-close *server-socket*) (error () nil))
       (setf *server-socket* nil))
