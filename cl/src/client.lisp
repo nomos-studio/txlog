@@ -25,8 +25,10 @@
 (defun connect (socket-path)
   "Open a connection to the txlog daemon at SOCKET-PATH.
    Returns a client handle.  Signals an error if the socket is not reachable."
-  (let* ((sock   (usocket:socket-connect socket-path nil
-                                         :element-type '(unsigned-byte 8)
+  ;; Pathname host + nil port → Unix domain socket.
+  ;; Character element-type matches the daemon side; sockets are UTF-8 on Linux.
+  (let* ((sock   (usocket:socket-connect (pathname socket-path) nil
+                                         :element-type 'character
                                          :protocol     :stream))
          (stream (usocket:socket-stream sock)))
     (%make-client :socket      sock
@@ -49,13 +51,17 @@
 ;; ---------------------------------------------------------------------------
 
 (defun wall-ns ()
-  "Current POSIX time in nanoseconds. STUB — replace with a platform call."
-  (error "wall-ns: not yet implemented"))
+  "Current POSIX time in nanoseconds. SBCL-specific: uses sb-ext:get-time-of-day
+   for microsecond precision, scaled to nanoseconds (sub-microsecond bits zero)."
+  (multiple-value-bind (sec usec) (sb-ext:get-time-of-day)
+    (+ (* sec 1000000000)
+       (* usec 1000))))
 
-(defun session-beat ()
-  "Current session beat at 60bpm (1 beat = 1 second) from the session epoch.
-   STUB — the caller must supply a session-start wall-ns and compute the delta."
-  (error "session-beat: not yet implemented"))
+(defun session-beat (session-start-ns &key (bpm 60))
+  "Current session beat from SESSION-START-NS at BPM (default 60bpm — 1 beat
+   per second; the human-scale session convention)."
+  (/ (* bpm (- (wall-ns) session-start-ns))
+     60.0d9))
 
 ;; ---------------------------------------------------------------------------
 ;; Wire helpers
@@ -64,10 +70,13 @@
 (defun %send-message (client map-string)
   "Write MAP-STRING (a serialised EDN map) to the daemon, followed by a newline.
    Flushes immediately.  No response is read."
-  (let ((bytes (babel:string-to-octets (concatenate 'string map-string #.(string #\newline))
-                                       :encoding :utf-8)))
-    (write-sequence bytes (client-stream client))
-    (finish-output (client-stream client))))
+  (write-line map-string (client-stream client))
+  (finish-output (client-stream client)))
+
+(defun read-response (client)
+  "Read one newline-terminated response from the daemon. Returns the response
+   string (no trailing newline) or NIL on EOF."
+  (read-line (client-stream client) nil nil))
 
 (defun %edn-map (&rest kv-pairs)
   "Build a minimal EDN map string from alternating key/value strings.

@@ -37,6 +37,7 @@
   (:export
    ;; Lifecycle
    #:log
+   #:log-p
    #:open
    #:close
    #:with-log
@@ -75,6 +76,7 @@
    #:with-client
    #:register-source
    #:emit
+   #:read-response
    ;; Utility
    #:session-beat
    #:wall-ns))

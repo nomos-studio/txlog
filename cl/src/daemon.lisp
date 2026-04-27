@@ -41,15 +41,71 @@
 ;; ---------------------------------------------------------------------------
 ;; Request handler — parses one EDN request map, dispatches, writes response
 ;; ---------------------------------------------------------------------------
+;;
+;; Wire protocol (one EDN map per line):
+;;   {:op :emit            :id "uuid" :source :ns/k :path [..] :beat .. :wall-ns ..
+;;                         :before .. :after .. :parent ..}
+;;   {:op :register-source :id :ns/k :name "..." :description "..."}
+;;
+;; Responses:
+;;   :ok                 — success
+;;   {:error "message"}  — failure
+;;
+;; :query is not handled here. Reads go directly via SQLite WAL from any peer.
 
-(defun handle-request (log request-string stream)
-  "Parse REQUEST-STRING as an EDN map, dispatch, write response to STREAM.
-   STUB — implement dispatch after from-edn-string is available."
-  (declare (ignore log request-string))
-  ;; Placeholder: echo :ok until the EDN reader is implemented.
+(defun %edn-kw= (val name)
+  "True if VAL is an edn-keyword whose name string-= NAME."
+  (and (txlog.edn:edn-keyword-p val)
+       (string= (txlog.edn:edn-keyword-name val) name)))
+
+(defun %get-field (request name)
+  "Look up an edn-keyword-named field in REQUEST (a hash-table from from-edn-string)."
+  (gethash (txlog.edn:make-edn-keyword :name name) request))
+
+(defun %write-ok (stream)
   (write-string ":ok" stream)
   (write-char #\newline stream)
   (finish-output stream))
+
+(defun %write-error (stream message)
+  (format stream "{:error ~a}~%" (txlog.edn:to-edn-string message))
+  (finish-output stream))
+
+(defun %do-emit (log request)
+  (txlog:emit log
+              (list :id      (%get-field request "id")
+                    :beat    (%get-field request "beat")
+                    :wall-ns (%get-field request "wall-ns")
+                    :source  (%get-field request "source")
+                    :path    (%get-field request "path")
+                    :before  (%get-field request "before")
+                    :after   (%get-field request "after")
+                    :parent  (%get-field request "parent"))))
+
+(defun %do-register-source (log request)
+  (txlog:register-source log
+                         (%get-field request "id")
+                         (%get-field request "name")
+                         (%get-field request "description")))
+
+(defun handle-request (log request-string stream)
+  "Parse REQUEST-STRING as an EDN map, dispatch by :op, write response to STREAM."
+  (handler-case
+      (let* ((request (txlog.edn:from-edn-string request-string))
+             (op      (when (hash-table-p request) (%get-field request "op"))))
+        (cond
+          ((null op)
+           (%write-error stream "missing :op"))
+          ((%edn-kw= op "emit")
+           (%do-emit log request)
+           (%write-ok stream))
+          ((%edn-kw= op "register-source")
+           (%do-register-source log request)
+           (%write-ok stream))
+          (t
+           (%write-error stream (format nil "unknown :op ~a" op)))))
+    (error (e)
+      (%write-error stream (format nil "~a" e)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Connection handler — reads newline-terminated messages and dispatches
@@ -73,19 +129,18 @@
 ;; ---------------------------------------------------------------------------
 
 (defun %accept-loop (log server-socket)
-  "Loop accepting connections; each gets a handler thread."
-  (loop
-    (handler-case
-        (let ((conn (usocket:socket-accept server-socket
-                                           :element-type '(unsigned-byte 8))))
-          (bt:make-thread
-           (lambda () (handle-connection log conn))
-           :name "txlog-connection"))
-      (usocket:socket-error ()
-        ;; Server socket closed — normal shutdown.
-        (return))
-      (error (e)
-        (format *error-output* "txlog-daemon: accept error: ~a~%" e)))))
+  "Loop accepting connections; each gets a handler thread.
+   Exits on any accept error (closed socket) or on a 'shutdown throw raised
+   from another thread via bt:interrupt-thread."
+  (catch 'shutdown
+    (loop
+      (let ((conn (handler-case
+                      (usocket:socket-accept server-socket
+                                             :element-type 'character)
+                    (error () (return)))))
+        (bt:make-thread
+         (lambda () (handle-connection log conn))
+         :name "txlog-connection")))))
 
 ;; ---------------------------------------------------------------------------
 ;; Lifecycle
@@ -102,8 +157,11 @@
     (when (probe-file socket-path)
       (delete-file socket-path))
     (let* ((log    (txlog:open db-path))
-           (server (usocket:socket-listen socket-path 5
-                                          :element-type '(unsigned-byte 8)))
+           ;; Pathname host + nil port → usocket selects Unix domain socket.
+           ;; Character element-type so read-line works on accepted streams.
+           (server (usocket:socket-listen (pathname socket-path) nil
+                                          :backlog 5
+                                          :element-type 'character))
            (thread (bt:make-thread
                     (lambda () (%accept-loop log server))
                     :name "txlog-listener")))
@@ -113,15 +171,21 @@
       t)))
 
 (defun stop ()
-  "Stop the daemon: close the server socket and the log.
+  "Stop the daemon: signal the listener out of accept(), close sockets and DB.
    Blocks until the listener thread exits."
   (bt:with-lock-held (*state-lock*)
+    (when (and *listener-thread* (bt:thread-alive-p *listener-thread*))
+      ;; socket-close alone does not unblock a Unix-domain accept on Linux,
+      ;; so we explicitly throw out of the accept call.
+      (handler-case
+          (bt:interrupt-thread *listener-thread*
+                               (lambda () (throw 'shutdown nil)))
+        (error () nil))
+      (bt:join-thread *listener-thread*))
+    (setf *listener-thread* nil)
     (when *server-socket*
-      (usocket:socket-close *server-socket*)
+      (handler-case (usocket:socket-close *server-socket*) (error () nil))
       (setf *server-socket* nil))
-    (when *listener-thread*
-      (bt:join-thread *listener-thread*)
-      (setf *listener-thread* nil))
     (when *log*
       (txlog:close *log*)
       (setf *log* nil))))

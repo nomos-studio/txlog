@@ -82,14 +82,14 @@
   "register-source completes without error."
   (with-log (log ":memory:")
     (register-source log (kw "txlog/user") "User")
-    (is t)))
+    (pass)))
 
 (test register-source-idempotent
   "register-source is idempotent — calling twice does not error."
   (with-log (log ":memory:")
     (register-source log (kw "txlog/user") "User")
     (register-source log (kw "txlog/user") "User Different Name")
-    (is t)))
+    (pass)))
 
 ;; ---------------------------------------------------------------------------
 ;; emit + read-all
@@ -129,14 +129,14 @@
 (test at-returns-latest-before-beat
   "at returns the after value of the latest write at or before the given beat."
   (with-log (log ":memory:")
-    (emit log (make-entry :path (make-path "a/x") :after "\"v1\"" :beat 1.0d0))
-    (emit log (make-entry :path (make-path "a/x") :after "\"v2\"" :beat 5.0d0))
+    (emit log (make-entry :path (make-path "a/x") :after "v1" :beat 1.0d0))
+    (emit log (make-entry :path (make-path "a/x") :after "v2" :beat 5.0d0))
     (is (equal "v1" (at log (make-path "a/x") 3.0d0)))
     (is (equal "v2" (at log (make-path "a/x") 5.0d0)))))
 
 (test at-returns-nil-before-first-write
   (with-log (log ":memory:")
-    (emit log (make-entry :path (make-path "a/x") :after "\"v\"" :beat 5.0d0))
+    (emit log (make-entry :path (make-path "a/x") :after "v" :beat 5.0d0))
     (is (null (at log (make-path "a/x") 2.0d0)))))
 
 ;; ---------------------------------------------------------------------------
@@ -147,7 +147,7 @@
   "range returns only entries within [from, to]."
   (with-log (log ":memory:")
     (loop for b in '(1.0d0 3.0d0 5.0d0 7.0d0)
-          do (emit log (make-entry :beat b :after "\"v\"")))
+          do (emit log (make-entry :beat b :after "v")))
     (let ((r (range log 3.0d0 5.0d0)))
       (is (= 2 (length r)))
       (is (= 3.0d0 (getf (first r)  :beat)))
@@ -184,8 +184,8 @@
 (test latest-values-last-write-wins
   "latest-values reflects the last after value per path."
   (with-log (log ":memory:")
-    (emit log (make-entry :path (make-path "a/x") :after "\"v1\"" :beat 1.0d0))
-    (emit log (make-entry :path (make-path "a/x") :after "\"v2\"" :beat 2.0d0))
+    (emit log (make-entry :path (make-path "a/x") :after "v1" :beat 1.0d0))
+    (emit log (make-entry :path (make-path "a/x") :after "v2" :beat 2.0d0))
     (let ((lv (latest-values log)))
       (is (= 1 (length lv)))
       (is (equal "v2" (cdr (first lv)))))))
@@ -193,7 +193,7 @@
 (test latest-values-excludes-deletions
   "latest-values excludes paths whose last write had no after value."
   (with-log (log ":memory:")
-    (emit log (make-entry :path (make-path "a/x") :after "\"v\"" :beat 1.0d0))
+    (emit log (make-entry :path (make-path "a/x") :after "v" :beat 1.0d0))
     (emit log (make-entry :path (make-path "a/x") :after nil     :beat 2.0d0))
     (let ((lv (latest-values log)))
       (is (null lv)))))
@@ -205,8 +205,8 @@
 (test crystallize-normalises-beats
   "crystallize normalises beat offsets relative to beat-from."
   (with-log (log ":memory:")
-    (emit log (make-entry :path (make-path "a/x") :after "\"v1\"" :beat 10.0d0))
-    (emit log (make-entry :path (make-path "a/x") :after "\"v2\"" :beat 15.0d0))
+    (emit log (make-entry :path (make-path "a/x") :after "v1" :beat 10.0d0))
+    (emit log (make-entry :path (make-path "a/x") :after "v2" :beat 15.0d0))
     (let ((result (crystallize log 10.0d0 20.0d0)))
       (let ((timeline (gethash (make-path "a/x") result)))
         (is (not (null timeline)))
@@ -217,8 +217,8 @@
   "crystallize excludes :txlog/schema paths by default."
   (with-log (log ":memory:")
     (emit log (make-entry :path (list (kw "txlog/schema") (kw "a/x"))
-                          :after "\"v\"" :beat 1.0d0))
-    (emit log (make-entry :path (make-path "a/x") :after "\"v\"" :beat 1.0d0))
+                          :after "v" :beat 1.0d0))
+    (emit log (make-entry :path (make-path "a/x") :after "v" :beat 1.0d0))
     (let ((result (crystallize log 0.0d0 10.0d0)))
       (is (= 1 (hash-table-count result))))))
 
@@ -230,7 +230,7 @@
   "diff detects paths in b absent from a."
   (with-log (a ":memory:")
     (with-log (b ":memory:")
-      (emit b (make-entry :path (make-path "new/key") :after "\"v\""))
+      (emit b (make-entry :path (make-path "new/key") :after "v"))
       (let ((d (diff a b)))
         (is (= 1 (length (diff-result-added d))))))))
 
@@ -238,7 +238,7 @@
   "diff detects paths in a absent from b."
   (with-log (a ":memory:")
     (with-log (b ":memory:")
-      (emit a (make-entry :path (make-path "old/key") :after "\"v\""))
+      (emit a (make-entry :path (make-path "old/key") :after "v"))
       (let ((d (diff a b)))
         (is (= 1 (length (diff-result-removed d))))))))
 
@@ -246,8 +246,8 @@
   "diff detects paths present in both with different last values."
   (with-log (a ":memory:")
     (with-log (b ":memory:")
-      (emit a (make-entry :path (make-path "shared/key") :after "\"v1\""))
-      (emit b (make-entry :path (make-path "shared/key") :after "\"v2\""))
+      (emit a (make-entry :path (make-path "shared/key") :after "v1"))
+      (emit b (make-entry :path (make-path "shared/key") :after "v2"))
       (let ((d (diff a b)))
         (is (= 1 (length (diff-result-changed d))))))))
 
@@ -255,8 +255,8 @@
   "diff detects paths with the same last value in both logs."
   (with-log (a ":memory:")
     (with-log (b ":memory:")
-      (emit a (make-entry :path (make-path "shared/key") :after "\"same\""))
-      (emit b (make-entry :path (make-path "shared/key") :after "\"same\""))
+      (emit a (make-entry :path (make-path "shared/key") :after "same"))
+      (emit b (make-entry :path (make-path "shared/key") :after "same"))
       (let ((d (diff a b)))
         (is (= 1 (length (diff-result-unchanged d))))))))
 
@@ -268,10 +268,44 @@
   "merge-into copies all entries from src into dst."
   (with-log (src ":memory:")
     (with-log (dst ":memory:")
-      (emit src (make-entry :beat 1.0d0 :after "\"v1\""))
-      (emit src (make-entry :beat 2.0d0 :after "\"v2\""))
+      (emit src (make-entry :beat 1.0d0 :after "v1"))
+      (emit src (make-entry :beat 2.0d0 :after "v2"))
       (merge-into dst src)
       (is (= 2 (length (read-all dst)))))))
+
+;; ---------------------------------------------------------------------------
+;; Daemon end-to-end (smoke)
+;; ---------------------------------------------------------------------------
+
+(defun %tmp-name (ext)
+  (format nil "/tmp/txlog-test-~a-~a.~a" (get-universal-time) (random 1000000) ext))
+
+(test daemon-roundtrip
+  "Daemon receives register-source and emit over the socket, persists to DB."
+  (let ((db   (%tmp-name "db"))
+        (sock (%tmp-name "sock")))
+    (unwind-protect
+         (progn
+           (txlog.daemon:start db sock)
+           (txlog.client:with-client (c sock)
+             (txlog.client:register-source c (kw "test/x") "X" "")
+             (is (string= ":ok" (txlog.client:read-response c)))
+             (txlog.client:emit c
+               :id      "00000000-0000-0000-0000-000000000001"
+               :source  (kw "test/x")
+               :path    (make-path "a/b")
+               :beat    1.0d0
+               :wall-ns 1714000000000000000
+               :after   "hello")
+             (is (string= ":ok" (txlog.client:read-response c))))
+           (txlog.daemon:stop)
+           (with-log (l db)
+             (let ((entries (read-all l)))
+               (is (= 1 (length entries)))
+               (is (string= "hello" (getf (first entries) :after))))))
+      (when (txlog.daemon:running-p) (txlog.daemon:stop))
+      (when (probe-file sock) (delete-file sock))
+      (when (probe-file db)   (delete-file db)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Runner
