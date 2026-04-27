@@ -1,0 +1,70 @@
+name: cpp CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['cpp/**']
+  pull_request:
+    branches: [main]
+    paths: ['cpp/**']
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / ${{ matrix.compiler }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            compiler: gcc-14
+            cc: gcc-14
+            cxx: g++-14
+          - os: ubuntu-24.04
+            compiler: clang-18
+            cc: clang-18
+            cxx: clang++-18
+          - os: macos-15
+            compiler: apple-clang
+            cc: clang
+            cxx: clang++
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SQLite3 (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libsqlite3-dev
+
+      - name: Configure
+        working-directory: cpp
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -S . -B build \
+            --preset ci \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+
+      - name: Build
+        working-directory: cpp
+        run: cmake --build build --parallel
+
+      - name: Test
+        working-directory: cpp
+        run: ctest --test-dir build --output-on-failure
+
+  format-check:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: sudo apt-get install -y clang-format
+
+      - name: Check formatting
+        run: |
+          find cpp/include cpp/src cpp/tests -name '*.cpp' -o -name '*.hpp' | \
+            xargs clang-format --dry-run --Werror

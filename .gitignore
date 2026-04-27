@@ -1,0 +1,39 @@
+# C++ build artifacts
+build/
+build-*/
+compile_commands.json
+.cache/
+
+# Clojure
+.cpcache/
+target/
+*.class
+*.jar
+
+# Common Lisp
+*.fasl
+*.fas
+*.lib
+*.fsl
+*.dfsl
+*.dx32fsl
+*.dx64fsl
+*.lx32fsl
+*.lx64fsl
+*.x86f
+*.sparcf
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+
+# Claude Code local settings (personal, not shared)
+.claude/settings.local.json
