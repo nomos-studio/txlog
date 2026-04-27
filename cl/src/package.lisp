@@ -33,7 +33,7 @@
 ;; ---------------------------------------------------------------------------
 (defpackage #:txlog
   (:use #:cl #:txlog.edn)
-  (:shadow #:close)
+  (:shadow #:close #:log #:open)
   (:export
    ;; Lifecycle
    #:log
@@ -84,6 +84,7 @@
 ;; ---------------------------------------------------------------------------
 (defpackage #:txlog.daemon
   (:use #:cl #:txlog #:txlog.edn)
+  (:shadowing-import-from #:txlog #:close #:log #:open)
   (:export
    #:start
    #:stop

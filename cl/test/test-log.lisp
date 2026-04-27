@@ -1,6 +1,7 @@
 ; SPDX-License-Identifier: MIT
 (defpackage #:txlog/test
-  (:use #:cl #:fiveam #:txlog #:txlog.edn))
+  (:use #:cl #:fiveam #:txlog #:txlog.edn)
+  (:shadowing-import-from #:txlog #:close #:log #:open))
 
 (in-package #:txlog/test)
 
