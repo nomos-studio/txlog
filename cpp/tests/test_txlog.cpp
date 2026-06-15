@@ -328,7 +328,7 @@ TEST_CASE("crystallize excludes schema paths by default", "[log]") {
     db.register_source(txlog::source::user, "User");
     db.register_source(txlog::source::schema, "Schema");
 
-    auto schema_path = make_path({"cljseq/schema", "some-key"});
+    auto schema_path = make_path({"txlog/schema", "some-key"});
     auto data_path   = make_path({"synth/cutoff"});
 
     db.emit(make_entry(1, 1.0, txlog::source::schema, schema_path, {}, edn::value{true}));

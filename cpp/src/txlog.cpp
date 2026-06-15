@@ -63,7 +63,7 @@ namespace {
             return false;
         if (!items[0].is<edn::keyword>())
             return false;
-        return items[0].get<edn::keyword>().name == "cljseq/schema";
+        return items[0].get<edn::keyword>().name == "txlog/schema";
     }
 
 } // namespace

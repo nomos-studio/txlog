@@ -13,9 +13,9 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// txlog — C++ library for reading and writing the cljseq transaction log.
+// txlog — C++ library for reading and writing the nous transaction log.
 //
-// Format ownership: the tx_log format is its own thing; cljseq is one
+// Format ownership: the tx_log format is its own thing; nous is one
 // participant. Any conforming tool that speaks EDN and SQLite is a peer.
 //
 // Thread safety: emit() is protected by an internal mutex. Read methods
@@ -29,9 +29,9 @@ namespace txlog {
 // source — named constants for format-owned vocabulary.
 //
 // EDN keyword namespace convention:
-//   :txlog/<name>       format-owned; every txlog-aware tool should understand
-//   :org.cljseq/<name>  cljseq-specific; opaque-but-valid to non-cljseq tools
-//   :<org>/<name>       open extension; any participant uses their own ns
+//   :txlog/<name>      format-owned; every txlog-aware tool should understand
+//   :org.nous/<name>   nous-specific; opaque-but-valid to non-nous tools
+//   :<org>/<name>      open extension; any participant uses their own ns
 // ---------------------------------------------------------------------------
 
 namespace source {
@@ -49,7 +49,7 @@ struct entry {
     edn::uuid                 id;         // 16-byte UUID; caller assigns before emit
     double                    beat;       // musical time
     int64_t                   wall_ns;    // wall-clock nanoseconds (POSIX epoch)
-    edn::keyword              source{""}; // e.g. :txlog/user, :org.cljseq/loop; set before emit
+    edn::keyword              source{""}; // e.g. :txlog/user, :org.nous/loop; set before emit
     edn::value                path;       // always edn::vector of edn::keyword in practice
     std::optional<edn::value> before;     // EDN value before the change; absent on insert
     std::optional<edn::value> after;      // EDN value after the change; absent on delete
@@ -115,7 +115,7 @@ class log {
     std::vector<entry> read_all() const;
 
     // -----------------------------------------------------------------------
-    // Layer 2 — query (mirrors cljseq.journal)
+    // Layer 2 — query (mirrors nous.journal)
     // -----------------------------------------------------------------------
 
     // All writes to path, in write order.
@@ -146,7 +146,7 @@ class log {
     // Per-path timeline for a beat window. Beats are normalised so that
     // beat_from maps to 0.0. Only entries with a non-null after value are
     // included. include_schema = false (default) excludes paths whose first
-    // element is :cljseq/schema.
+    // element is :txlog/schema.
     timeline crystallize(double beat_from, double beat_to, std::optional<edn::keyword> source = {},
                          bool include_schema = false) const;
 

@@ -3,7 +3,7 @@
   "Named constants for format-owned source vocabulary.
    EDN keyword namespace convention:
      :txlog/*        format-owned; every txlog-aware tool should understand
-     :org.cljseq/*   cljseq-specific; opaque-but-valid to non-cljseq tools
+     :org.nous/*     nous-specific; opaque-but-valid to non-nous tools
      :<org>/*        open extension; any participant uses their own ns")
 
 (def user   :txlog/user)

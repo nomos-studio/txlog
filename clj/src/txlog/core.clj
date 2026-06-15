@@ -6,7 +6,7 @@
      {:id      java.util.UUID
       :beat    double          ; musical or human-scale beat
       :wall-ns long            ; POSIX nanoseconds
-      :source  keyword         ; e.g. :txlog/user, :org.cljseq/loop
+      :source  keyword         ; e.g. :txlog/user, :org.nous/loop
       :path    edn-value       ; vector of keywords in practice
       :before  edn-value       ; nil if absent
       :after   edn-value       ; nil if absent
@@ -76,7 +76,7 @@
    )")
 
 (defn- schema-path? [path]
-  (= (first path) :cljseq/schema))
+  (= (first path) :txlog/schema))
 
 ;; ---------------------------------------------------------------------------
 ;; Log lifecycle
@@ -222,7 +222,7 @@
 (defn crystallize
   "Per-path timeline for a beat window. Beats are normalised to beat-from = 0.
    Only entries with a non-nil after value are included.
-   :include-schema? false (default) excludes paths starting with :cljseq/schema."
+   :include-schema? false (default) excludes paths starting with :txlog/schema."
   [log beat-from beat-to & {:keys [source include-schema?] :or {include-schema? false}}]
   (let [entries (apply range log beat-from beat-to
                        (when source [:source source]))]

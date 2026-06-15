@@ -216,7 +216,7 @@
   (txlog/with-log [db ":memory:"]
     (txlog/register-source db source/user   "User")
     (txlog/register-source db source/schema "Schema")
-    (let [schema-path [:cljseq/schema :some-key]
+    (let [schema-path [:txlog/schema :some-key]
           data-path   [:synth/cutoff]]
       (txlog/emit db (entry 1 1.0 source/schema schema-path true))
       (txlog/emit db (entry 2 2.0 source/user   data-path   0.5))

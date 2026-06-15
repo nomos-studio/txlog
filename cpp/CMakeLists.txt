@@ -3,12 +3,12 @@ cmake_minimum_required(VERSION 3.20)
 
 project(txlog-cpp
     VERSION 0.1.0
-    DESCRIPTION "txlog-cpp — C++ library for reading and writing the cljseq transaction log"
-    HOMEPAGE_URL "https://github.com/cljseq/txlog-cpp"
+    DESCRIPTION "txlog-cpp — C++ library for reading and writing the nous transaction log"
+    HOMEPAGE_URL "https://github.com/nomos-studio/txlog"
     LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
-# Dependency policy (mirrors cljseq native convention)
+# Dependency policy (mirrors nous native convention)
 #
 # - No Boost. C++20 STL covers all use cases.
 # - FetchContent + pinned tag for any dependency with a build step.
@@ -45,7 +45,7 @@ if(DEFINED EDN_CPP_DIR)
     FetchContent_Declare(edn-cpp SOURCE_DIR "${EDN_CPP_DIR}")
 else()
     FetchContent_Declare(edn-cpp
-        GIT_REPOSITORY https://github.com/cljseq/edn-cpp.git
+        GIT_REPOSITORY https://github.com/nous/edn-cpp.git
         GIT_TAG        v0.1.0
         GIT_SHALLOW    TRUE)
 endif()
