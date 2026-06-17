@@ -33,10 +33,11 @@
 ;; ---------------------------------------------------------------------------
 (defpackage #:txlog
   (:use #:cl #:txlog.edn)
-  (:shadow #:close)
+  (:shadow #:close #:log #:open)
   (:export
    ;; Lifecycle
    #:log
+   #:log-p
    #:open
    #:close
    #:with-log
@@ -75,6 +76,11 @@
    #:with-client
    #:register-source
    #:emit
+   #:read-response
+   ;; Conditions
+   #:daemon-error
+   #:daemon-error-response
+   #:connection-closed-error
    ;; Utility
    #:session-beat
    #:wall-ns))
@@ -84,6 +90,7 @@
 ;; ---------------------------------------------------------------------------
 (defpackage #:txlog.daemon
   (:use #:cl #:txlog #:txlog.edn)
+  (:shadowing-import-from #:txlog #:close #:log #:open)
   (:export
    #:start
    #:stop

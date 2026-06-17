@@ -40,14 +40,40 @@
 ;; ---------------------------------------------------------------------------
 
 (defun uuid-string->bytes (uuid-string)
-  "Parse canonical UUID string to a 16-element (unsigned-byte 8) vector. STUB."
-  (declare (ignore uuid-string))
-  (error "uuid-string->bytes: not yet implemented"))
+  "Parse canonical UUID string \"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\" to a
+   16-element (unsigned-byte 8) vector. Big-endian; matches edn-cpp's
+   edn::uuid and java.util.UUID's most-/least-significant-bits layout."
+  (let ((hex (with-output-to-string (out)
+               (loop for c across uuid-string
+                     unless (char= c #\-) do (write-char c out)))))
+    (unless (= 32 (length hex))
+      (error "uuid-string->bytes: expected 32 hex digits, got ~a in ~s"
+             (length hex) uuid-string))
+    (let ((bytes (make-array 16 :element-type '(unsigned-byte 8))))
+      (loop for i below 16
+            for j = (* i 2)
+            do (setf (aref bytes i)
+                     (parse-integer hex :start j :end (+ j 2) :radix 16)))
+      bytes)))
 
 (defun bytes->uuid-string (bytes)
-  "Format a 16-element byte vector as a canonical UUID string. STUB."
-  (declare (ignore bytes))
-  (error "bytes->uuid-string: not yet implemented"))
+  "Format a 16-element byte vector as a canonical UUID string."
+  (unless (= 16 (length bytes))
+    (error "bytes->uuid-string: expected 16 bytes, got ~a" (length bytes)))
+  (with-output-to-string (out)
+    (loop for i below 16
+          do (when (member i '(4 6 8 10)) (write-char #\- out))
+             (format out "~(~2,'0x~)" (aref bytes i)))))
+
+(defun make-uuid-bytes ()
+  "Generate a fresh RFC 4122 v4 UUID as a 16-element (unsigned-byte 8) vector.
+   Reads from /dev/urandom; sets the version-4 nibble and variant-1 bits."
+  (let ((bytes (make-array 16 :element-type '(unsigned-byte 8))))
+    (with-open-file (in #P"/dev/urandom" :element-type '(unsigned-byte 8))
+      (read-sequence bytes in))
+    (setf (aref bytes 6) (logior #x40 (logand #x0f (aref bytes 6))))
+    (setf (aref bytes 8) (logior #x80 (logand #x3f (aref bytes 8))))
+    bytes))
 
 ;; ---------------------------------------------------------------------------
 ;; Entry plist
@@ -62,9 +88,19 @@
 ;; ---------------------------------------------------------------------------
 
 (defun row->entry (row)
-  "Convert a cl-sqlite result row to an entry plist. STUB."
-  (declare (ignore row))
-  (error "row->entry: not yet implemented"))
+  "Convert a cl-sqlite result row of the form
+   (id tx_id beat wall_ns source path before after parent)
+   to an entry plist."
+  (destructuring-bind (id tx-id beat wall-ns source path before after parent) row
+    (declare (ignore id))
+    (list :id      (when tx-id (bytes->uuid-string tx-id))
+          :beat    beat
+          :wall-ns wall-ns
+          :source  (txlog.edn:from-edn-string source)
+          :path    (txlog.edn:from-edn-string path)
+          :before  (when before (txlog.edn:from-edn-string before))
+          :after   (when after  (txlog.edn:from-edn-string after))
+          :parent  (when parent (txlog.edn:from-edn-string parent)))))
 
 ;; ---------------------------------------------------------------------------
 ;; log struct
@@ -117,21 +153,23 @@
 
 (defun emit (log entry)
   "Append one entry to the log. Thread-safe; serialised via lock.
-   ENTRY is a plist with :id :beat :wall-ns :source :path
-   and optional :before :after :parent."
-  (bt:with-lock-held ((log-lock log))
-    (sqlite:execute-non-query
-     (log-db log)
-     "INSERT INTO changes (tx_id, beat, wall_ns, source, path, before, after, parent)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-     (uuid-string->bytes (getf entry :id))
-     (float (getf entry :beat) 1.0d0)
-     (getf entry :wall-ns)
-     (txlog.edn:to-edn-string (getf entry :source))
-     (txlog.edn:to-edn-string (getf entry :path))
-     (let ((v (getf entry :before))) (when v (txlog.edn:to-edn-string v)))
-     (let ((v (getf entry :after)))  (when v (txlog.edn:to-edn-string v)))
-     (let ((v (getf entry :parent))) (when v (txlog.edn:to-edn-string v))))))
+   ENTRY is a plist with :beat :wall-ns :source :path and optional
+   :id :before :after :parent. If :id is missing, a fresh v4 UUID is
+   generated."
+  (let ((id (getf entry :id)))
+    (bt:with-lock-held ((log-lock log))
+      (sqlite:execute-non-query
+       (log-db log)
+       "INSERT INTO changes (tx_id, beat, wall_ns, source, path, before, after, parent)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+       (if id (uuid-string->bytes id) (make-uuid-bytes))
+       (float (getf entry :beat) 1.0d0)
+       (getf entry :wall-ns)
+       (txlog.edn:to-edn-string (getf entry :source))
+       (txlog.edn:to-edn-string (getf entry :path))
+       (let ((v (getf entry :before))) (when v (txlog.edn:to-edn-string v)))
+       (let ((v (getf entry :after)))  (when v (txlog.edn:to-edn-string v)))
+       (let ((v (getf entry :parent))) (when v (txlog.edn:to-edn-string v)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Layer 1 — full log
@@ -220,9 +258,10 @@
 (defun crystallize (log beat-from beat-to &key source (include-schema nil))
   "Per-path timeline for a beat window. Beats normalised to BEAT-FROM = 0.
    Only entries with a non-nil after value are included.
-   :INCLUDE-SCHEMA nil (default) excludes paths starting with :txlog/schema."
+   :INCLUDE-SCHEMA nil (default) excludes paths starting with :txlog/schema.
+   The hash-table uses EQUALP so that edn-keyword paths compare structurally."
   (let ((entries (range log beat-from beat-to :source source))
-        (result  (make-hash-table :test 'equal)))
+        (result  (make-hash-table :test 'equalp)))
     (dolist (e entries)
       (let ((path  (getf e :path))
             (after (getf e :after))
@@ -267,18 +306,20 @@
   dst)
 
 (defun diff (log-a log-b)
-  "Compare the final state of two logs. Returns a DIFF-RESULT."
+  "Compare the final state of two logs. Returns a DIFF-RESULT.
+   Uses EQUALP for path/value comparison so that fresh edn-keyword instances
+   compare structurally by name."
   (let ((a (latest-values log-a))
         (b (latest-values log-b)))
     (make-diff-result
      :added     (loop for (k . bv) in b
-                      unless (assoc k a :test #'equal) collect (cons k bv))
+                      unless (assoc k a :test #'equalp) collect (cons k bv))
      :removed   (loop for (k . av) in a
-                      unless (assoc k b :test #'equal) collect (cons k av))
+                      unless (assoc k b :test #'equalp) collect (cons k av))
      :changed   (loop for (k . bv) in b
-                      for av = (cdr (assoc k a :test #'equal))
-                      when (and av (not (equal av bv)))
+                      for av = (cdr (assoc k a :test #'equalp))
+                      when (and av (not (equalp av bv)))
                         collect (cons k (list :before av :after bv)))
      :unchanged (loop for (k . bv) in b
-                      for av = (cdr (assoc k a :test #'equal))
-                      when (and av (equal av bv)) collect k))))
+                      for av = (cdr (assoc k a :test #'equalp))
+                      when (and av (equalp av bv)) collect k))))

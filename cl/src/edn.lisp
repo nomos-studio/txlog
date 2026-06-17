@@ -88,15 +88,111 @@
 ;; ---------------------------------------------------------------------------
 ;; from-edn-string — deserialise an EDN string from SQLite.
 ;;
-;; Stub. The full implementation needs a proper recursive-descent parser for
-;; the txlog EDN subset. See clj/src/txlog/core.clj for what the Clojure side
-;; produces — paths are always vectors of keywords, values are scalars or maps.
-;;
-;; The #uuid tagged literal is not stored as EDN in tx_id (raw BLOB); it may
-;; appear in before/after/parent if callers put UUIDs there.
+;; Recursive-descent parser for the txlog EDN subset. EDN false maps to nil
+;; (CL has no separate false). The #uuid tagged literal is not handled here —
+;; tx_id is stored as a raw BLOB, never as #uuid in EDN.
 ;; ---------------------------------------------------------------------------
 
+(defparameter +edn-whitespace+ '(#\Space #\Tab #\Newline #\Return #\,))
+
+(defparameter +edn-delimiters+
+  '(#\Space #\Tab #\Newline #\Return #\, #\] #\} #\) #\[ #\{ #\())
+
+(defun %edn-skip-ws (in)
+  (loop for c = (peek-char nil in nil nil)
+        while (and c (member c +edn-whitespace+))
+        do (read-char in)))
+
+(defun %edn-read-token (in)
+  "Read a contiguous run of non-delimiter chars."
+  (with-output-to-string (out)
+    (loop for c = (peek-char nil in nil nil)
+          while (and c (not (member c +edn-delimiters+)))
+          do (write-char (read-char in) out))))
+
+(defun %edn-parse (in)
+  (%edn-skip-ws in)
+  (let ((c (peek-char nil in nil nil)))
+    (cond
+      ((null c)              (error "from-edn-string: unexpected eof"))
+      ((char= c #\:)         (%edn-parse-keyword in))
+      ((char= c #\")         (%edn-parse-string in))
+      ((char= c #\[)         (%edn-parse-vector in))
+      ((char= c #\{)         (%edn-parse-map in))
+      ((or (digit-char-p c)
+           (char= c #\-)
+           (char= c #\+))    (%edn-parse-number in))
+      ((alpha-char-p c)      (%edn-parse-symbol in))
+      (t (error "from-edn-string: unexpected char ~s" c)))))
+
+(defun %edn-parse-keyword (in)
+  (read-char in)              ; consume #\:
+  (let ((name (%edn-read-token in)))
+    (when (zerop (length name))
+      (error "from-edn-string: empty keyword"))
+    (make-edn-keyword :name name)))
+
+(defun %edn-parse-string (in)
+  (read-char in)              ; consume opening #\"
+  (with-output-to-string (out)
+    (loop for c = (read-char in nil nil) do
+      (cond
+        ((null c)        (error "from-edn-string: unterminated string"))
+        ((char= c #\")   (return))
+        ((char= c #\\)
+         (let ((esc (read-char in nil nil)))
+           (case esc
+             (#\"       (write-char #\" out))
+             (#\\       (write-char #\\ out))
+             (#\n       (write-char #\Newline out))
+             (#\t       (write-char #\Tab out))
+             (#\r       (write-char #\Return out))
+             (otherwise (error "from-edn-string: bad escape \\~a" esc)))))
+        (t (write-char c out))))))
+
+(defun %edn-parse-vector (in)
+  (read-char in)              ; consume #\[
+  (let ((items '()))
+    (loop
+      (%edn-skip-ws in)
+      (let ((c (peek-char nil in nil nil)))
+        (cond
+          ((null c)        (error "from-edn-string: unterminated vector"))
+          ((char= c #\])   (read-char in) (return (nreverse items)))
+          (t               (push (%edn-parse in) items)))))))
+
+(defun %edn-parse-map (in)
+  (read-char in)              ; consume #\{
+  ;; equalp so edn-keyword keys compare structurally by name.
+  (let ((ht (make-hash-table :test 'equalp)))
+    (loop
+      (%edn-skip-ws in)
+      (let ((c (peek-char nil in nil nil)))
+        (cond
+          ((null c)        (error "from-edn-string: unterminated map"))
+          ((char= c #\})   (read-char in) (return ht))
+          (t (let* ((k (%edn-parse in))
+                    (v (progn (%edn-skip-ws in) (%edn-parse in))))
+               (setf (gethash k ht) v))))))))
+
+(defun %edn-parse-number (in)
+  (let* ((token (%edn-read-token in))
+         (val   (let ((*read-default-float-format* 'double-float))
+                  (read-from-string token))))
+    (unless (numberp val)
+      (error "from-edn-string: bad number ~s" token))
+    val))
+
+(defun %edn-parse-symbol (in)
+  (let ((token (%edn-read-token in)))
+    (cond
+      ((string= token "nil")   nil)
+      ((string= token "true")  t)
+      ((string= token "false") nil)   ; CL has no false; EDN false → nil
+      (t (error "from-edn-string: unknown symbol ~s" token)))))
+
 (defun from-edn-string (s)
-  "Parse EDN string S into a CL value. STUB — implement the full parser."
-  (declare (ignore s))
-  (error "from-edn-string: not yet implemented"))
+  "Parse EDN string S into a CL value. The txlog subset only — keywords,
+   strings, integers, doubles, booleans, nil, vectors of those, and maps."
+  (with-input-from-string (in s)
+    (%edn-parse in)))

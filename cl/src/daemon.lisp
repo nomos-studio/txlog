@@ -27,6 +27,10 @@
 (defvar *listener-thread* nil "The bt thread running the accept loop.")
 (defvar *state-lock*     (bt:make-lock "txlog-daemon-state") "Guards above vars.")
 
+(defvar *handlers*       nil "List of (thread . conn-socket) for active connections.")
+(defvar *handlers-lock*  (bt:make-lock "txlog-daemon-handlers")
+  "Separate lock so handlers can self-unregister without contending with stop().")
+
 ;; ---------------------------------------------------------------------------
 ;; Predicates
 ;; ---------------------------------------------------------------------------
@@ -41,15 +45,71 @@
 ;; ---------------------------------------------------------------------------
 ;; Request handler — parses one EDN request map, dispatches, writes response
 ;; ---------------------------------------------------------------------------
+;;
+;; Wire protocol (one EDN map per line):
+;;   {:op :emit            :id "uuid" :source :ns/k :path [..] :beat .. :wall-ns ..
+;;                         :before .. :after .. :parent ..}
+;;   {:op :register-source :id :ns/k :name "..." :description "..."}
+;;
+;; Responses:
+;;   :ok                 — success
+;;   {:error "message"}  — failure
+;;
+;; :query is not handled here. Reads go directly via SQLite WAL from any peer.
 
-(defun handle-request (log request-string stream)
-  "Parse REQUEST-STRING as an EDN map, dispatch, write response to STREAM.
-   STUB — implement dispatch after from-edn-string is available."
-  (declare (ignore log request-string))
-  ;; Placeholder: echo :ok until the EDN reader is implemented.
+(defun %edn-kw= (val name)
+  "True if VAL is an edn-keyword whose name string-= NAME."
+  (and (txlog.edn:edn-keyword-p val)
+       (string= (txlog.edn:edn-keyword-name val) name)))
+
+(defun %get-field (request name)
+  "Look up an edn-keyword-named field in REQUEST (a hash-table from from-edn-string)."
+  (gethash (txlog.edn:make-edn-keyword :name name) request))
+
+(defun %write-ok (stream)
   (write-string ":ok" stream)
   (write-char #\newline stream)
   (finish-output stream))
+
+(defun %write-error (stream message)
+  (format stream "{:error ~a}~%" (txlog.edn:to-edn-string message))
+  (finish-output stream))
+
+(defun %do-emit (log request)
+  (txlog:emit log
+              (list :id      (%get-field request "id")
+                    :beat    (%get-field request "beat")
+                    :wall-ns (%get-field request "wall-ns")
+                    :source  (%get-field request "source")
+                    :path    (%get-field request "path")
+                    :before  (%get-field request "before")
+                    :after   (%get-field request "after")
+                    :parent  (%get-field request "parent"))))
+
+(defun %do-register-source (log request)
+  (txlog:register-source log
+                         (%get-field request "id")
+                         (%get-field request "name")
+                         (%get-field request "description")))
+
+(defun handle-request (log request-string stream)
+  "Parse REQUEST-STRING as an EDN map, dispatch by :op, write response to STREAM."
+  (handler-case
+      (let* ((request (txlog.edn:from-edn-string request-string))
+             (op      (when (hash-table-p request) (%get-field request "op"))))
+        (cond
+          ((null op)
+           (%write-error stream "missing :op"))
+          ((%edn-kw= op "emit")
+           (%do-emit log request)
+           (%write-ok stream))
+          ((%edn-kw= op "register-source")
+           (%do-register-source log request)
+           (%write-ok stream))
+          (t
+           (%write-error stream (format nil "unknown :op ~a" op)))))
+    (error (e)
+      (%write-error stream (format nil "~a" e)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Connection handler — reads newline-terminated messages and dispatches
@@ -66,26 +126,39 @@
               (handle-request log line stream))))
       (error (e)
         (format *error-output* "txlog-daemon: connection error: ~a~%" e)))
-    (usocket:socket-close conn-socket)))
+    ;; stop() may have closed the socket from another thread; ignore the dupe.
+    (handler-case (usocket:socket-close conn-socket) (error () nil))))
 
 ;; ---------------------------------------------------------------------------
 ;; Listener loop
 ;; ---------------------------------------------------------------------------
 
+(defun %track-handler (log conn)
+  "Make a handler thread for CONN and register (thread . conn) atomically so
+   the thread cannot complete and self-unregister before the entry exists."
+  (bt:with-lock-held (*handlers-lock*)
+    (let ((thread (bt:make-thread
+                   (lambda ()
+                     (unwind-protect
+                          (handle-connection log conn)
+                       (bt:with-lock-held (*handlers-lock*)
+                         (setf *handlers*
+                               (delete (bt:current-thread) *handlers*
+                                       :key #'car :test #'eq)))))
+                   :name "txlog-connection")))
+      (push (cons thread conn) *handlers*))))
+
 (defun %accept-loop (log server-socket)
-  "Loop accepting connections; each gets a handler thread."
-  (loop
-    (handler-case
-        (let ((conn (usocket:socket-accept server-socket
-                                           :element-type '(unsigned-byte 8))))
-          (bt:make-thread
-           (lambda () (handle-connection log conn))
-           :name "txlog-connection"))
-      (usocket:socket-error ()
-        ;; Server socket closed — normal shutdown.
-        (return))
-      (error (e)
-        (format *error-output* "txlog-daemon: accept error: ~a~%" e)))))
+  "Loop accepting connections; each gets a handler thread.
+   Exits on any accept error (closed socket) or on a 'shutdown throw raised
+   from another thread via bt:interrupt-thread."
+  (catch 'shutdown
+    (loop
+      (let ((conn (handler-case
+                      (usocket:socket-accept server-socket
+                                             :element-type 'character)
+                    (error () (return)))))
+        (%track-handler log conn)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Lifecycle
@@ -102,8 +175,11 @@
     (when (probe-file socket-path)
       (delete-file socket-path))
     (let* ((log    (txlog:open db-path))
-           (server (usocket:socket-listen socket-path 5
-                                          :element-type '(unsigned-byte 8)))
+           ;; Pathname host + nil port → usocket selects Unix domain socket.
+           ;; Character element-type so read-line works on accepted streams.
+           (server (usocket:socket-listen (pathname socket-path) nil
+                                          :backlog 5
+                                          :element-type 'character))
            (thread (bt:make-thread
                     (lambda () (%accept-loop log server))
                     :name "txlog-listener")))
@@ -113,15 +189,36 @@
       t)))
 
 (defun stop ()
-  "Stop the daemon: close the server socket and the log.
-   Blocks until the listener thread exits."
+  "Stop the daemon: signal the listener out of accept(), drain in-flight
+   connection handlers, close sockets, close the DB. Blocks until all
+   handler threads have exited."
   (bt:with-lock-held (*state-lock*)
+    ;; 1. Stop accepting new connections.
+    (when (and *listener-thread* (bt:thread-alive-p *listener-thread*))
+      ;; socket-close alone does not unblock a Unix-domain accept on Linux,
+      ;; so we explicitly throw out of the accept call.
+      (handler-case
+          (bt:interrupt-thread *listener-thread*
+                               (lambda () (throw 'shutdown nil)))
+        (error () nil))
+      (bt:join-thread *listener-thread*))
+    (setf *listener-thread* nil)
+    ;; 2. Drain in-flight handler threads. socket-shutdown sends EOF at the
+    ;;    kernel level, waking any handler thread blocked in read-line —
+    ;;    which then exits the loop, runs its unwind-protect (closing the
+    ;;    socket and self-unregistering), and terminates. socket-close on
+    ;;    SBCL does not reliably wake a concurrent reader; shutdown does.
+    (let ((snapshot (bt:with-lock-held (*handlers-lock*) (copy-list *handlers*))))
+      (dolist (h snapshot)
+        (handler-case (usocket:socket-shutdown (cdr h) :io) (error () nil)))
+      (dolist (h snapshot)
+        (when (bt:thread-alive-p (car h))
+          (handler-case (bt:join-thread (car h)) (error () nil)))))
+    (bt:with-lock-held (*handlers-lock*) (setf *handlers* nil))
+    ;; 3. Close the listening socket and the DB.
     (when *server-socket*
-      (usocket:socket-close *server-socket*)
+      (handler-case (usocket:socket-close *server-socket*) (error () nil))
       (setf *server-socket* nil))
-    (when *listener-thread*
-      (bt:join-thread *listener-thread*)
-      (setf *listener-thread* nil))
     (when *log*
       (txlog:close *log*)
       (setf *log* nil))))
