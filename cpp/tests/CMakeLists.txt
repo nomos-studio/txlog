@@ -7,6 +7,7 @@ add_executable(txlog-tests
 target_link_libraries(txlog-tests
     PRIVATE txlog::txlog
             Catch2::Catch2WithMain
+            sanitizers::sanitizers
 )
 
 set_target_properties(txlog-tests PROPERTIES
