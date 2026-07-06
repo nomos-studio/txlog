@@ -46,7 +46,7 @@ if(DEFINED EDN_CPP_DIR)
     FetchContent_Declare(edn-cpp SOURCE_DIR "${EDN_CPP_DIR}")
 else()
     FetchContent_Declare(edn-cpp
-        GIT_REPOSITORY git@github.com:nomos-studio/edn-cpp.git
+        GIT_REPOSITORY https://github.com/nomos-studio/edn-cpp.git
         GIT_TAG        main
         GIT_SHALLOW    TRUE)
 endif()

@@ -1,3 +1,12 @@
+# SPDX-License-Identifier: BSL-1.0
+#
+# txlog C++ CI — two-gate pipeline, triggered only on changes under cpp/.
+#
+# Gate 1 (build-and-test): all compilers, Release build, runs on push + PR.
+#   - edn-cpp checked out at current main (main-tracking integration).
+# Gate 2 (sanitize):       Clang only, Debug + ASan + UBSan, PR only,
+#                           runs only after gate 1 is fully green.
+
 name: cpp CI
 
 on:
@@ -10,42 +19,46 @@ on:
 
 jobs:
   build-and-test:
-    name: ${{ matrix.os }} / ${{ matrix.compiler }}
+    name: build / ${{ matrix.os }} / ${{ matrix.compiler }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            compiler: gcc-14
-            cc: gcc-14
-            cxx: g++-14
-          - os: ubuntu-24.04
-            compiler: clang-18
-            cc: clang-18
-            cxx: clang++-18
-          - os: macos-15
-            compiler: apple-clang
-            cc: clang
-            cxx: clang++
+          - { os: ubuntu-24.04, compiler: gcc-14,     cc: gcc-14,   cxx: g++-14     }
+          - { os: ubuntu-24.04, compiler: clang-18,   cc: clang-18, cxx: clang++-18 }
+          - { os: macos-15,     compiler: apple-clang, cc: clang,   cxx: clang++    }
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check out edn-cpp @ main
+        uses: actions/checkout@v4
+        with:
+          repository: nomos-studio/edn-cpp
+          path: deps/edn-cpp
 
       - name: Install SQLite3 (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get install -y libsqlite3-dev
 
+      - name: Cache CMake FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: cpp/build/_deps
+          key: ${{ runner.os }}-${{ matrix.compiler }}-txlog-cmake-deps-${{ hashFiles('cpp/CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.compiler }}-txlog-cmake-deps-
+
       - name: Configure
         working-directory: cpp
         env:
-          CC: ${{ matrix.cc }}
+          CC:  ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
         run: |
-          cmake -S . -B build \
-            --preset ci \
+          cmake -S . -B build --preset ci \
             -DCMAKE_C_COMPILER=${{ matrix.cc }} \
-            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DEDN_CPP_DIR=${{ github.workspace }}/deps/edn-cpp
 
       - name: Build
         working-directory: cpp
@@ -54,6 +67,57 @@ jobs:
       - name: Test
         working-directory: cpp
         run: ctest --test-dir build --output-on-failure
+
+  sanitize:
+    name: sanitize / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: build-and-test
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, cc: clang-18, cxx: clang++-18 }
+          - { os: macos-15,     cc: clang,    cxx: clang++    }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out edn-cpp @ main
+        uses: actions/checkout@v4
+        with:
+          repository: nomos-studio/edn-cpp
+          path: deps/edn-cpp
+
+      - name: Install SQLite3 (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libsqlite3-dev
+
+      - name: Cache CMake FetchContent deps (sanitize)
+        uses: actions/cache@v4
+        with:
+          path: cpp/build-san/_deps
+          key: ${{ runner.os }}-clang-txlog-san-cmake-deps-${{ hashFiles('cpp/CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-clang-txlog-san-cmake-deps-
+
+      - name: Configure
+        working-directory: cpp
+        env:
+          CC:  ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -S . -B build-san --preset sanitize \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DEDN_CPP_DIR=${{ github.workspace }}/deps/edn-cpp
+
+      - name: Build
+        working-directory: cpp
+        run: cmake --build build-san --parallel
+
+      - name: Test
+        working-directory: cpp
+        run: ctest --test-dir build-san --output-on-failure
 
   format-check:
     name: clang-format
