@@ -32,6 +32,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache CMake FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: cpp/build/_deps
+          key: ${{ runner.os }}-${{ matrix.compiler }}-txlog-cmake-deps-${{ hashFiles('cpp/CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.compiler }}-txlog-cmake-deps-
+
       - name: Check out edn-cpp @ main
         uses: actions/checkout@v4
         with:
@@ -41,13 +48,6 @@ jobs:
       - name: Install SQLite3 (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get install -y libsqlite3-dev
-
-      - name: Cache CMake FetchContent deps
-        uses: actions/cache@v4
-        with:
-          path: cpp/build/_deps
-          key: ${{ runner.os }}-${{ matrix.compiler }}-txlog-cmake-deps-${{ hashFiles('cpp/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.compiler }}-txlog-cmake-deps-
 
       - name: Configure
         working-directory: cpp
@@ -83,6 +83,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache CMake FetchContent deps (sanitize)
+        uses: actions/cache@v4
+        with:
+          path: cpp/build-san/_deps
+          key: ${{ runner.os }}-clang-txlog-san-cmake-deps-${{ hashFiles('cpp/CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-clang-txlog-san-cmake-deps-
+
       - name: Check out edn-cpp @ main
         uses: actions/checkout@v4
         with:
@@ -92,13 +99,6 @@ jobs:
       - name: Install SQLite3 (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get install -y libsqlite3-dev
-
-      - name: Cache CMake FetchContent deps (sanitize)
-        uses: actions/cache@v4
-        with:
-          path: cpp/build-san/_deps
-          key: ${{ runner.os }}-clang-txlog-san-cmake-deps-${{ hashFiles('cpp/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-clang-txlog-san-cmake-deps-
 
       - name: Configure
         working-directory: cpp
