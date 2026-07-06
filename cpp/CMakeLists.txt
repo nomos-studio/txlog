@@ -46,8 +46,8 @@ if(DEFINED EDN_CPP_DIR)
     FetchContent_Declare(edn-cpp SOURCE_DIR "${EDN_CPP_DIR}")
 else()
     FetchContent_Declare(edn-cpp
-        GIT_REPOSITORY https://github.com/nous/edn-cpp.git
-        GIT_TAG        v0.1.0
+        GIT_REPOSITORY git@github.com:nomos-studio/edn-cpp.git
+        GIT_TAG        main
         GIT_SHALLOW    TRUE)
 endif()
 set(EDN_CPP_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
@@ -160,7 +160,7 @@ endif()
 
 # REUSE licence compliance target
 find_program(REUSE_EXECUTABLE reuse)
-if(REUSE_EXECUTABLE)
+if(REUSE_EXECUTABLE AND NOT TARGET lint-reuse)
     add_custom_target(lint-reuse
         COMMAND ${REUSE_EXECUTABLE} lint
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/..
