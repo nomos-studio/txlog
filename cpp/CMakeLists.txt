@@ -39,6 +39,14 @@ option(TXLOG_CPP_INSTALL        "Generate install targets"    ON)
 
 # SQLite3 — system package on all target platforms.
 find_package(SQLite3 REQUIRED)
+# Some cmake/distro combinations find SQLite3 headers but don't emit the
+# SQLite3::SQLite3 IMPORTED target (a known quirk on certain Linux setups).
+# Fall back to pkg-config to create the target if find_package omitted it.
+if(NOT TARGET SQLite3::SQLite3)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PC_SQLite3 REQUIRED IMPORTED_TARGET sqlite3)
+    add_library(SQLite3::SQLite3 ALIAS PkgConfig::PC_SQLite3)
+endif()
 
 # edn-cpp — FetchContent with optional local override for development.
 #   To use a local checkout: cmake -DEDN_CPP_DIR=/path/to/edn-cpp ...
