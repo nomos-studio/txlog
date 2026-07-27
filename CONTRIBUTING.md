@@ -192,7 +192,8 @@ for tests, `ruff` for formatting.
 - Each peer's `README.md` documents that peer; the root `README.md` is the
   format overview.
 - CI fans out per peer; failing one peer does not block the others.
-- The `spec/` directory is the authoritative format reference. Schema changes
-  go there first, implementations follow.
+- [`doc/protocol-txlog.md`](doc/protocol-txlog.md) is the format reference
+  (consolidating the `cpp/include/txlog/txlog.hpp` + `clj/src/txlog/core.clj`
+  sources). Schema changes go there first, implementations follow.
 - No cross-peer build dependencies — `cpp/` does not depend on `clj/` at build
   time and vice versa. The format (SQLite + EDN) is the only interface.
